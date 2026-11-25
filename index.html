@@ -49,6 +49,7 @@
 </div>
 <div id="controls" class="panel">
   <button id="btnRelief" class="on">Relieve</button>
+  <button id="btnBlocks">Bloques</button>
   <button id="btnWater" class="on">Agua</button>
   <button id="btnTrees" class="on">Árboles</button>
   <button id="btnWire">Aristas</button>
@@ -166,15 +167,51 @@
   }
   terrain.count = n;
 
+  // Malla suave: la superficie real sin columnas verticales.
+  const smoothPositions = new Float32Array(N * N * 3);
+  const smoothColors = new Float32Array(N * N * 3);
+  const smoothIndices = [];
+  for (let gz = 0; gz < N; gz++) {
+    for (let gx = 0; gx < N; gx++) {
+      const i = gz * N + gx;
+      smoothPositions[i * 3] = W.minX + gx * step;
+      smoothPositions[i * 3 + 1] = heights[i];
+      smoothPositions[i * 3 + 2] = W.minZ + gz * step;
+    }
+  }
+  for (let gz = 0; gz < N - 1; gz++) {
+    for (let gx = 0; gx < N - 1; gx++) {
+      const a = gz * N + gx;
+      const b = a + 1;
+      const c = a + N;
+      const d = c + 1;
+      smoothIndices.push(a, c, b, b, c, d);
+    }
+  }
+  const smoothGeo = new THREE.BufferGeometry();
+  smoothGeo.setAttribute('position', new THREE.BufferAttribute(smoothPositions, 3));
+  smoothGeo.setAttribute('color', new THREE.BufferAttribute(smoothColors, 3));
+  smoothGeo.setIndex(smoothIndices);
+  smoothGeo.computeVertexNormals();
+  const smoothMat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
+  const smooth = new THREE.Mesh(smoothGeo, smoothMat);
+  smooth.visible = true;
+  terrain.visible = false;
+  scene.add(smooth);
+
   let mode = 'relief';
   function applyColors() {
     const src = mode === 'relief' ? relief : surface;
     for (let i = 0; i < n; i++) {
       tmp.setRGB(src[i * 3], src[i * 3 + 1], src[i * 3 + 2]);
       terrain.setColorAt(i, tmp);
+      smoothColors[i * 3] = src[i * 3];
+      smoothColors[i * 3 + 1] = src[i * 3 + 1];
+      smoothColors[i * 3 + 2] = src[i * 3 + 2];
     }
     terrain.instanceMatrix.needsUpdate = true;
     if (terrain.instanceColor) terrain.instanceColor.needsUpdate = true;
+    smoothGeo.attributes.color.needsUpdate = true;
   }
   applyColors();
   scene.add(terrain);
@@ -221,6 +258,18 @@
     pointer.x = (ev.clientX / innerWidth) * 2 - 1;
     pointer.y = -(ev.clientY / innerHeight) * 2 + 1;
     raycaster.setFromCamera(pointer, camera);
+    const hitSmooth = smooth.visible
+      ? raycaster.intersectObject(smooth, false)[0] : null;
+    if (hitSmooth) {
+      const gx = Math.max(0, Math.min(N - 1,
+        Math.round((hitSmooth.point.x - W.minX) / step)));
+      const gz = Math.max(0, Math.min(N - 1,
+        Math.round((hitSmooth.point.z - W.minZ) / step)));
+      const h = heights[gz * N + gx];
+      hoverEl.innerHTML = 'x <b>' + (W.minX + gx * step) + '</b> · z <b>' +
+        (W.minZ + gz * step) + '</b> · altura <b>' + h + '</b>';
+      return;
+    }
     const hit = raycaster.intersectObject(terrain, false)[0];
     if (hit && hit.instanceId != null) {
       const id = hit.instanceId;
@@ -241,6 +290,7 @@
   }
 
   const btnRelief = document.getElementById('btnRelief');
+  const btnBlocks = document.getElementById('btnBlocks');
   const btnWater = document.getElementById('btnWater');
   const btnTrees = document.getElementById('btnTrees');
   const btnWire = document.getElementById('btnWire');
@@ -262,8 +312,17 @@
   };
   btnWire.onclick = () => {
     material.wireframe = !material.wireframe;
+    smoothMat.wireframe = material.wireframe;
     material.needsUpdate = true;
+    smoothMat.needsUpdate = true;
     btnWire.classList.toggle('on', material.wireframe);
+  };
+  btnBlocks.onclick = () => {
+    const bloques = !terrain.visible;
+    terrain.visible = bloques;
+    smooth.visible = !bloques;
+    btnBlocks.classList.toggle('on', bloques);
+    showToast(bloques ? 'Vista de bloques' : 'Superficie suave');
   };
   document.getElementById('btnTop').onclick = () => {
     camera.position.set(0.1, 1150, 0.1);
