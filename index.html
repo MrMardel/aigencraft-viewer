@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AigenCraft · Visor 3D</title>
+<style>
+  :root { color-scheme: dark; }
+  html,body { margin:0; height:100%; overflow:hidden; background:#a9c9e8;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  #app { position:fixed; inset:0; }
+  .panel { position:fixed; z-index:10; background:rgba(12,22,34,.78);
+    border:1px solid rgba(140,190,230,.25); border-radius:12px;
+    color:#e8f2fb; box-shadow:0 12px 40px rgba(0,0,0,.25);
+    backdrop-filter: blur(10px); }
+  #info { top:18px; left:18px; padding:14px 18px; max-width:min(420px,80vw); }
+  #info h1 { margin:0 0 4px; font-size:16px; letter-spacing:.08em; font-weight:600; }
+  #info .sub { color:#9fc3df; font-size:12px; line-height:1.6; }
+  #info .num { color:#ffd98a; }
+  #hud { bottom:18px; left:18px; padding:10px 14px; font-size:12px;
+    color:#bfd8ee; min-width:230px; }
+  #hud b { color:#fff; font-weight:600; }
+  #controls { top:18px; right:18px; padding:10px; display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; max-width:360px; }
+  button { font:inherit; font-size:11px; color:#dcecfb; background:rgba(70,120,170,.25);
+    border:1px solid rgba(150,200,240,.3); border-radius:8px; padding:7px 10px;
+    cursor:pointer; transition:.15s; }
+  button:hover { background:rgba(100,160,220,.4); }
+  button.on { background:#3d8fd1; border-color:#8fd0ff; color:#fff; }
+  #loading { position:fixed; inset:0; display:grid; place-items:center; z-index:50;
+    background:#0b1622; color:#bfe0ff; font-size:14px; letter-spacing:.1em; }
+  #loading.hide { display:none; }
+  .hint { color:#8fb6d4; font-size:11px; margin-top:6px; }
+  #toast { position:fixed; left:50%; bottom:22px; transform:translateX(-50%);
+    z-index:20; background:rgba(12,22,34,.9); color:#fff; padding:8px 14px;
+    border-radius:8px; font-size:12px; opacity:0; transition:.3s; pointer-events:none; }
+  #toast.show { opacity:1; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="loading">CARGANDO MUNDO…</div>
+<div id="info" class="panel">
+  <h1>AIGENCRAFT · VISOR 3D</h1>
+  <div class="sub">
+    Frostveil · seed <span class="num">784512369</span><br>
+    Área <span class="num">768×768</span> · paso <span class="num">3</span> bloques<br>
+    <span id="range"></span>
+  </div>
+</div>
+<div id="controls" class="panel">
+  <button id="btnRelief" class="on">Relieve</button>
+  <button id="btnWater" class="on">Agua</button>
+  <button id="btnTrees" class="on">Árboles</button>
+  <button id="btnWire">Aristas</button>
+  <button id="btnTop">Vista superior</button>
+  <button id="btnReset">Reiniciar vista</button>
+</div>
+<div id="hud" class="panel">
+  <div>Arrastrá para girar · scroll para acercar</div>
+  <div class="hint" id="hover">Pasá el mouse sobre el terreno para ver coordenadas.</div>
+</div>
+<div id="toast"></div>
+
+<script src="three.min.js"></script>
+<script src="OrbitControls.js"></script>
+<script src="world-data.js"></script>
+<script>
+(function () {
+  'use strict';
+  const W = window.WORLD;
+  if (!W) { document.getElementById('loading').textContent = 'No se encontró world-data.js'; return; }
+
+  function b64ToBuffer(b64) {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes.buffer;
+  }
+
+  const heights = new Uint16Array(b64ToBuffer(W.heights));
+  const surfaceBytes = new Uint8Array(b64ToBuffer(W.colors));
+  const N = W.width;
+  const step = W.step;
+  const baseY = Math.max(0, W.minHeight - 2);
+  const maxH = Math.max(1, W.maxHeight);
+
+  document.getElementById('range').textContent =
+    'Alturas ' + W.minHeight + '–' + W.maxHeight + ' · mar ' + W.sea;
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xa9c9e8);
+  scene.fog = new THREE.Fog(0xa9c9e8, 500, 2400);
+
+  const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 1, 6000);
+  const center = new THREE.Vector3(0, 80, 0);
+  camera.position.set(640, 430, 640);
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  document.getElementById('app').appendChild(renderer.domElement);
+
+  const controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.075;
+  controls.target.copy(center);
+  controls.minDistance = 40;
+  controls.maxDistance = 2600;
+  controls.maxPolarAngle = Math.PI * 0.495;
+
+  scene.add(new THREE.HemisphereLight(0xdceeff, 0x304050, 1.0));
+  const sun = new THREE.DirectionalLight(0xfff4e6, 1.65);
+  sun.position.set(-1.2, 1.8, 0.9);
+  scene.add(sun);
+  const fill = new THREE.DirectionalLight(0x9dc8ff, 0.4);
+  fill.position.set(1, 0.8, -1);
+  scene.add(fill);
+
+  const geometry = new THREE.BoxGeometry(1, 1, 1);
+  const material = new THREE.MeshLambertMaterial({ color: 0xffffff });
+  const terrain = new THREE.InstancedMesh(geometry, material, N * N);
+  terrain.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+
+  const dummy = new THREE.Object3D();
+  const tmp = new THREE.Color();
+  const relief = new Float32Array(N * N * 3);
+  const surface = new Float32Array(N * N * 3);
+
+  function hyps(h) {
+    if (h <= W.sea) return [0.10, 0.27, 0.46];
+    const t = (h - W.sea) / Math.max(1, maxH - W.sea);
+    if (t < 0.22) return [0.23, 0.45, 0.35];
+    if (t < 0.45) return [0.38, 0.52, 0.40];
+    if (t < 0.68) return [0.52, 0.53, 0.50];
+    if (t < 0.85) return [0.62, 0.62, 0.63];
+    return [0.90, 0.95, 1.00];
+  }
+
+  let n = 0;
+  for (let gz = 0; gz < N; gz++) {
+    for (let gx = 0; gx < N; gx++) {
+      const i = gz * N + gx;
+      const h = heights[i];
+      const height = Math.max(1, h - baseY);
+      const x = W.minX + gx * step + step / 2;
+      const z = W.minZ + gz * step + step / 2;
+      dummy.position.set(x, baseY + height / 2, z);
+      dummy.scale.set(step, height, step);
+      dummy.updateMatrix();
+      terrain.setMatrixAt(n, dummy.matrix);
+
+      const hR = heights[gz * N + Math.min(N - 1, gx + 1)];
+      const hD = heights[Math.min(N - 1, gz + 1) * N + gx];
+      const slope = Math.max(Math.abs(h - hR), Math.abs(h - hD)) / step;
+      const shade = 1 - Math.min(0.55, slope / 7);
+      const rc = hyps(h);
+      relief[i * 3] = rc[0] * shade;
+      relief[i * 3 + 1] = rc[1] * shade;
+      relief[i * 3 + 2] = rc[2] * shade;
+      surface[i * 3] = surfaceBytes[i * 3] / 255 * shade;
+      surface[i * 3 + 1] = surfaceBytes[i * 3 + 1] / 255 * shade;
+      surface[i * 3 + 2] = surfaceBytes[i * 3 + 2] / 255 * shade;
+      n++;
+    }
+  }
+  terrain.count = n;
+
+  let mode = 'relief';
+  function applyColors() {
+    const src = mode === 'relief' ? relief : surface;
+    for (let i = 0; i < n; i++) {
+      tmp.setRGB(src[i * 3], src[i * 3 + 1], src[i * 3 + 2]);
+      terrain.setColorAt(i, tmp);
+    }
+    terrain.instanceMatrix.needsUpdate = true;
+    if (terrain.instanceColor) terrain.instanceColor.needsUpdate = true;
+  }
+  applyColors();
+  scene.add(terrain);
+
+  const waterGeo = new THREE.PlaneGeometry(W.width * step * 1.6, W.height * step * 1.6);
+  const waterMat = new THREE.MeshPhongMaterial({
+    color: 0x2e6fae, transparent: true, opacity: 0.55,
+    depthWrite: false, shininess: 90, side: THREE.DoubleSide
+  });
+  const water = new THREE.Mesh(waterGeo, waterMat);
+  water.rotation.x = -Math.PI / 2;
+  water.position.set(0, W.sea + 0.15, 0);
+  scene.add(water);
+
+  const treeGroup = new THREE.Group();
+  const canopyGeo = new THREE.ConeGeometry(2.7, 7.5, 7);
+  const trunkGeo = new THREE.BoxGeometry(1.15, 4.2, 1.15);
+  const canopyMat = new THREE.MeshLambertMaterial({ color: 0x3f7d38 });
+  const trunkMat = new THREE.MeshLambertMaterial({ color: 0x6b4a2f });
+  const canopy = new THREE.InstancedMesh(canopyGeo, canopyMat, Math.max(1, W.trees.length));
+  const trunk = new THREE.InstancedMesh(trunkGeo, trunkMat, Math.max(1, W.trees.length));
+  const treeColors = [0x2e6b45, 0x4b8b3a, 0x2f7a4a, 0x8a3a3a];
+  W.trees.forEach((t, i) => {
+    const x = t[0] + 0.5, y = t[1], z = t[2] + 0.5;
+    dummy.position.set(x, y + 2.1, z);
+    dummy.scale.set(1, 1, 1);
+    dummy.rotation.set(0, 0, 0);
+    dummy.updateMatrix();
+    trunk.setMatrixAt(i, dummy.matrix);
+    dummy.position.set(x, y + 7.2, z);
+    dummy.updateMatrix();
+    canopy.setMatrixAt(i, dummy.matrix);
+    canopy.setColorAt(i, new THREE.Color(treeColors[t[3] % treeColors.length]));
+  });
+  canopy.count = trunk.count = W.trees.length;
+  if (canopy.instanceColor) canopy.instanceColor.needsUpdate = true;
+  treeGroup.add(trunk, canopy);
+  scene.add(treeGroup);
+
+  const raycaster = new THREE.Raycaster();
+  const pointer = new THREE.Vector2();
+  const hoverEl = document.getElementById('hover');
+  renderer.domElement.addEventListener('pointermove', (ev) => {
+    pointer.x = (ev.clientX / innerWidth) * 2 - 1;
+    pointer.y = -(ev.clientY / innerHeight) * 2 + 1;
+    raycaster.setFromCamera(pointer, camera);
+    const hit = raycaster.intersectObject(terrain, false)[0];
+    if (hit && hit.instanceId != null) {
+      const id = hit.instanceId;
+      const gz = Math.floor(id / N), gx = id % N;
+      const h = heights[id];
+      hoverEl.innerHTML = 'x <b>' + (W.minX + gx * step) + '</b> · z <b>' +
+        (W.minZ + gz * step) + '</b> · altura <b>' + h + '</b>';
+    }
+  });
+
+  const toast = document.getElementById('toast');
+  let toastTimer = 0;
+  function showToast(msg) {
+    toast.textContent = msg;
+    toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove('show'), 1800);
+  }
+
+  const btnRelief = document.getElementById('btnRelief');
+  const btnWater = document.getElementById('btnWater');
+  const btnTrees = document.getElementById('btnTrees');
+  const btnWire = document.getElementById('btnWire');
+  btnRelief.onclick = () => {
+    mode = mode === 'relief' ? 'surface' : 'relief';
+    btnRelief.textContent = mode === 'relief' ? 'Relieve' : 'Superficie';
+    btnRelief.classList.toggle('on', mode === 'relief');
+    applyColors();
+    showToast(mode === 'relief' ? 'Color por relieve' : 'Color por bloque de superficie');
+  };
+  btnWater.onclick = () => {
+    water.visible = !water.visible;
+    btnWater.classList.toggle('on', water.visible);
+  };
+  btnTrees.onclick = () => {
+    treeGroup.visible = !treeGroup.visible;
+    btnTrees.classList.toggle('on', treeGroup.visible);
+    if (!W.trees.length) showToast('Esta exportación no detectó árboles de tronco.');
+  };
+  btnWire.onclick = () => {
+    material.wireframe = !material.wireframe;
+    material.needsUpdate = true;
+    btnWire.classList.toggle('on', material.wireframe);
+  };
+  document.getElementById('btnTop').onclick = () => {
+    camera.position.set(0.1, 1150, 0.1);
+    controls.target.set(0, 80, 0);
+    controls.update();
+  };
+  document.getElementById('btnReset').onclick = () => {
+    camera.position.set(640, 430, 640);
+    controls.target.copy(center);
+    controls.update();
+  };
+
+  addEventListener('resize', () => {
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+  });
+
+  function animate() {
+    requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene, camera);
+  }
+
+  document.getElementById('loading').classList.add('hide');
+  animate();
+})();
+</script>
+</body>
+</html>
