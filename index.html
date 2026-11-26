@@ -26,6 +26,9 @@
     cursor:pointer; transition:.15s; }
   button:hover { background:rgba(100,160,220,.4); }
   button.on { background:#3d8fd1; border-color:#8fd0ff; color:#fff; }
+  select { font:inherit; font-size:11px; color:#dcecfb; background:rgba(70,120,170,.25);
+    border:1px solid rgba(150,200,240,.3); border-radius:8px; padding:7px 8px;
+    cursor:pointer; }
   #loading { position:fixed; inset:0; display:grid; place-items:center; z-index:50;
     background:#0b1622; color:#bfe0ff; font-size:14px; letter-spacing:.1em; }
   #loading.hide { display:none; }
@@ -42,12 +45,13 @@
 <div id="info" class="panel">
   <h1>AIGENCRAFT · VISOR 3D</h1>
   <div class="sub">
-    Frostveil · seed <span class="num">784512369</span><br>
-    Área <span class="num">768×768</span> · paso <span class="num">3</span> bloques<br>
+    <span id="worldName">—</span> · seed <span class="num" id="seed">—</span><br>
+    Área <span class="num" id="area">—</span> · paso <span class="num" id="paso">—</span> bloques<br>
     <span id="range"></span>
   </div>
 </div>
 <div id="controls" class="panel">
+  <select id="worldSel" title="Reino"></select>
   <button id="btnRelief" class="on">Relieve</button>
   <button id="btnBlocks">Bloques</button>
   <button id="btnWater" class="on">Agua</button>
@@ -64,12 +68,16 @@
 
 <script src="three.min.js"></script>
 <script src="OrbitControls.js"></script>
-<script src="world-data.js"></script>
+<script src="worlds-data.js"></script>
 <script>
 (function () {
   'use strict';
-  const W = window.WORLD;
-  if (!W) { document.getElementById('loading').textContent = 'No se encontró world-data.js'; return; }
+  const dados = window.WORLDS || {};
+  const chaves = Object.keys(dados);
+  const pedido = new URLSearchParams(location.search).get('world');
+  const clave = pedido && dados[pedido] ? pedido : chaves[0];
+  const W = dados[clave];
+  if (!W) { document.getElementById('loading').textContent = 'No se encontró worlds-data.js'; return; }
 
   function b64ToBuffer(b64) {
     const bin = atob(b64);
@@ -85,6 +93,11 @@
   const baseY = Math.max(0, W.minHeight - 2);
   const maxH = Math.max(1, W.maxHeight);
 
+  document.getElementById('worldName').textContent = W.name;
+  document.getElementById('seed').textContent = W.seed;
+  document.getElementById('area').textContent = (W.width * W.step) + '×' + (W.height * W.step);
+  document.getElementById('paso').textContent = W.step;
+  document.title = 'AigenCraft · ' + W.name + ' · Visor 3D';
   document.getElementById('range').textContent =
     'Alturas ' + W.minHeight + '–' + W.maxHeight + ' · mar ' + W.sea;
 
@@ -93,8 +106,10 @@
   scene.fog = new THREE.Fog(0xa9c9e8, 500, 2400);
 
   const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 1, 6000);
-  const center = new THREE.Vector3(0, 80, 0);
-  camera.position.set(640, 430, 640);
+  const medio = Math.round((W.minHeight + W.maxHeight) / 2);
+  const center = new THREE.Vector3(0, medio, 0);
+  const area = W.width * W.step;
+  camera.position.set(area * 0.75, area * 0.55, area * 0.75);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -224,6 +239,8 @@
   const water = new THREE.Mesh(waterGeo, waterMat);
   water.rotation.x = -Math.PI / 2;
   water.position.set(0, W.sea + 0.15, 0);
+  water.visible = W.minHeight <= W.sea;
+  if (!water.visible) document.getElementById('btnWater').classList.remove('on');
   scene.add(water);
 
   const treeGroup = new THREE.Group();
@@ -250,6 +267,9 @@
   if (canopy.instanceColor) canopy.instanceColor.needsUpdate = true;
   treeGroup.add(trunk, canopy);
   scene.add(treeGroup);
+  if (!W.trees.length) {
+    document.getElementById('btnTrees').style.display = 'none';
+  }
 
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
@@ -289,6 +309,16 @@
     toastTimer = setTimeout(() => toast.classList.remove('show'), 1800);
   }
 
+  const sel = document.getElementById('worldSel');
+  chaves.forEach(function (k) {
+    const op = document.createElement('option');
+    op.value = k;
+    op.textContent = dados[k].name;
+    if (k === clave) op.selected = true;
+    sel.appendChild(op);
+  });
+  sel.onchange = function () { location.search = '?world=' + sel.value; };
+
   const btnRelief = document.getElementById('btnRelief');
   const btnBlocks = document.getElementById('btnBlocks');
   const btnWater = document.getElementById('btnWater');
@@ -325,12 +355,12 @@
     showToast(bloques ? 'Vista de bloques' : 'Superficie suave');
   };
   document.getElementById('btnTop').onclick = () => {
-    camera.position.set(0.1, 1150, 0.1);
-    controls.target.set(0, 80, 0);
+    camera.position.set(0.1, area * 1.5, 0.1);
+    controls.target.copy(center);
     controls.update();
   };
   document.getElementById('btnReset').onclick = () => {
-    camera.position.set(640, 430, 640);
+    camera.position.set(area * 0.75, area * 0.55, area * 0.75);
     controls.target.copy(center);
     controls.update();
   };
