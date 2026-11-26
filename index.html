@@ -54,7 +54,6 @@
   <select id="worldSel" title="Reino"></select>
   <button id="btnTextures" class="on">Texturas</button>
   <button id="btnRelief">Relieve</button>
-  <button id="btnBlocks">Bloques</button>
   <button id="btnWater" class="on">Agua</button>
   <button id="btnTrees" class="on">Árboles</button>
   <button id="btnWire">Aristas</button>
@@ -228,150 +227,134 @@
   scene.add(terrain);
 
   // ---------------------------------------------------------------
-  // Texturas: atlas procedural (16x16 px por material) para no
-  // depender de assets externos. Cada celda toma su tile según mats.
+  // Bloques con texturas reales de Minecraft, una malla por material.
+  // La superficie se dibuja como un voxel: tapa plana por celda y
+  // paredes verticales donde el vecino queda más bajo.
   // ---------------------------------------------------------------
-  const ATLAS_COLS = 8, TILE = 16, ATLAS = ATLAS_COLS * TILE;
-  const MAT_STYLE = {
-    stone:      { base: [128, 128, 128], noise: 26, kind: 'speck' },
-    cobble:     { base: [104, 104, 104], noise: 30, kind: 'cobble' },
-    dirt:       { base: [116, 86, 58],  noise: 24, kind: 'speck' },
-    grass:      { base: [86, 142, 60],  noise: 26, kind: 'speck' },
-    sand:       { base: [214, 198, 143], noise: 18, kind: 'speck' },
-    gravel:     { base: [136, 132, 128], noise: 40, kind: 'cobble' },
-    snow:       { base: [238, 246, 250], noise: 10, kind: 'speck' },
-    ice:        { base: [176, 214, 238], noise: 14, kind: 'speck' },
-    water:      { base: [48, 96, 156],  noise: 10, kind: 'water' },
-    lava:       { base: [120, 44, 12],   noise: 22, kind: 'lava' },
-    netherrack: { base: [58, 24, 26],    noise: 24, kind: 'cobble' },
-    basalt:     { base: [34, 32, 38],    noise: 14, kind: 'lines' },
-    blackstone: { base: [24, 22, 26],    noise: 16, kind: 'speck' },
-    magma:      { base: [88, 32, 14],    noise: 20, kind: 'lava' },
-    soul:       { base: [96, 76, 56],    noise: 22, kind: 'speck' },
-    end_stone:  { base: [204, 198, 158], noise: 16, kind: 'speck' },
-    purpur:     { base: [168, 124, 166], noise: 16, kind: 'bricks' },
-    wood:       { base: [110, 80, 50],   noise: 16, kind: 'lines' },
-    leaves:     { base: [62, 110, 50],   noise: 32, kind: 'speck' },
-    terracotta: { base: [140, 90, 70],   noise: 16, kind: 'bricks' },
-    quartz:     { base: [230, 226, 216], noise: 10, kind: 'speck' },
-    gold:       { base: [214, 182, 86],  noise: 14, kind: 'speck' },
-    obsidian:   { base: [20, 16, 30],    noise: 12, kind: 'speck' },
-    moss:       { base: [90, 130, 66],   noise: 26, kind: 'speck' },
-    crimson:    { base: [122, 58, 74],   noise: 24, kind: 'speck' },
-    deepslate:  { base: [74, 74, 78],    noise: 18, kind: 'lines' }
-  };
-  function azar(seed) {
-    let t = seed >>> 0;
-    return function () {
-      t += 0x6D2B79F5;
-      let r = t;
-      r = Math.imul(r ^ r >>> 15, r | 1);
-      r ^= r + Math.imul(r ^ r >>> 7, r | 61);
-      return ((r ^ r >>> 14) >>> 0) / 4294967296;
-    };
+  const grupoBloques = new THREE.Group();
+  scene.add(grupoBloques);
+
+  function cargarTextura(url, tinte) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement('canvas');
+        c.width = c.height = 16;
+        const ctx = c.getContext('2d');
+        ctx.drawImage(img, 0, 0, 16, 16, 0, 0, 16, 16);
+        if (tinte) {
+          ctx.globalCompositeOperation = 'multiply';
+          ctx.fillStyle = tinte;
+          ctx.fillRect(0, 0, 16, 16);
+        }
+        const tex = new THREE.CanvasTexture(c);
+        tex.magFilter = THREE.NearestFilter;
+        tex.minFilter = THREE.NearestFilter;
+        tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+        tex.encoding = THREE.sRGBEncoding;
+        tex.needsUpdate = true;
+        resolve(tex);
+      };
+      img.onerror = () => {
+        const c = document.createElement('canvas');
+        c.width = c.height = 16;
+        const ctx = c.getContext('2d');
+        ctx.fillStyle = '#8a8a8a';
+        ctx.fillRect(0, 0, 16, 16);
+        const tex = new THREE.CanvasTexture(c);
+        tex.magFilter = THREE.NearestFilter;
+        tex.minFilter = THREE.NearestFilter;
+        resolve(tex);
+      };
+      img.src = url;
+    });
   }
-  function crearAtlas() {
-    const canvas = document.createElement('canvas');
-    canvas.width = canvas.height = ATLAS;
-    const ctx = canvas.getContext('2d');
-    const img = ctx.createImageData(ATLAS, ATLAS);
-    const datos = img.data;
-    const nombres = W.matNames || [];
-    for (let m = 0; m < nombres.length; m++) {
-      const estilo = MAT_STYLE[nombres[m]]
-        || { base: [120, 120, 120], noise: 20, kind: 'speck' };
-      const tx = (m % ATLAS_COLS) * TILE;
-      const ty = Math.floor(m / ATLAS_COLS) * TILE;
-      const rnd = azar(0x9E3779B9 ^ (m * 2654435761));
-      const base = estilo.base;
-      for (let y = 0; y < TILE; y++) {
-        for (let x = 0; x < TILE; x++) {
-          let r = base[0], g = base[1], b = base[2];
-          const n = (rnd() - 0.5) * 2 * estilo.noise;
-          r += n; g += n; b += n;
-          // El paso del visor es de 3 bloques: cada tile lleva un 3x3
-          // de "bloques" para que la textura quede a escala.
-          const sx = Math.floor(x * 3 / TILE), sy = Math.floor(y * 3 / TILE);
-          const celda = (sx * 7 + sy * 13 + m * 31) % 7;
-          const v = (celda - 3) * 7;
-          r += v; g += v; b += v;
-          if (estilo.kind === 'lines' && (y % 5 === 0 || x % 7 === 0)) {
-            r -= 20; g -= 20; b -= 20;
-          }
-          if (estilo.kind === 'bricks' &&
-              (y % 8 === 0 || (x + (y < 8 ? 0 : 8)) % 16 === 0)) {
-            r -= 30; g -= 30; b -= 30;
-          }
-          if (estilo.kind === 'cobble') {
-            const cx = Math.floor(x / 5), cy = Math.floor(y / 5);
-            const v = ((cx * 7 + cy * 13) % 5) * 9 - 18;
-            r += v; g += v; b += v;
-          }
-          if (estilo.kind === 'water' &&
-              (y + Math.round(Math.sin(x / 2.2) * 1.6)) % 6 === 0) {
-            r += 18; g += 24; b += 28;
-          }
-          if (estilo.kind === 'lava' && rnd() > 0.86) {
-            r = 250; g += 70; b += 10;
-          }
-          const o = ((ty + y) * ATLAS + tx + x) * 4;
-          datos[o] = Math.max(0, Math.min(255, r));
-          datos[o + 1] = Math.max(0, Math.min(255, g));
-          datos[o + 2] = Math.max(0, Math.min(255, b));
-          datos[o + 3] = 255;
+
+  const TINTES = { grass: '#79c05a' };
+  const nombresMat = W.matNames || [];
+  const texturas = {};
+  const cargas = nombresMat.map((nombre) => Promise.all([
+    cargarTextura('textures/' + nombre + '_top.png', TINTES[nombre] || null),
+    cargarTextura('textures/' + nombre + '_side.png', null)
+  ]).then(([top, side]) => { texturas[nombre] = { top, side }; }));
+
+  function construirBloques() {
+    const geos = {};
+    const porMaterial = (mat, tipo) => {
+      const k = mat + '|' + tipo;
+      if (!geos[k]) geos[k] = { pos: [], uv: [], idx: [], n: 0 };
+      return geos[k];
+    };
+    const cuad = (g, a, b, c, d, ua, ub, uc, ud) => {
+      const base = g.n;
+      g.pos.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2], d[0], d[1], d[2]);
+      g.uv.push(ua[0], ua[1], ub[0], ub[1], uc[0], uc[1], ud[0], ud[1]);
+      g.idx.push(base, base + 2, base + 1, base, base + 3, base + 2);
+      g.n += 4;
+    };
+    const hEn = (gx, gz) => (gx < 0 || gz < 0 || gx >= N || gz >= N)
+      ? -9999 : heights[gz * N + gx];
+
+    for (let gz = 0; gz < N; gz++) {
+      for (let gx = 0; gx < N; gx++) {
+        const i = gz * N + gx;
+        const mat = nombresMat[mats[i]] || 'stone';
+        const y = heights[i];
+        const x0 = W.minX + gx * step, x1 = x0 + step;
+        const z0 = W.minZ + gz * step, z1 = z0 + step;
+        const gTop = porMaterial(mat, 'top');
+        cuad(gTop,
+          [x0, y, z0], [x1, y, z0], [x1, y, z1], [x0, y, z1],
+          [x0, z0], [x1, z0], [x1, z1], [x0, z1]);
+        const gSide = porMaterial(mat, 'side');
+        const hN = hEn(gx, gz - 1);
+        if (hN < y) {
+          cuad(gSide, [x0, hN, z0], [x1, hN, z0], [x1, y, z0], [x0, y, z0],
+            [x0, hN], [x1, hN], [x1, y], [x0, y]);
+        }
+        const hS = hEn(gx, gz + 1);
+        if (hS < y) {
+          cuad(gSide, [x1, hS, z1], [x0, hS, z1], [x0, y, z1], [x1, y, z1],
+            [x1, hS], [x0, hS], [x0, y], [x1, y]);
+        }
+        const hW = hEn(gx - 1, gz);
+        if (hW < y) {
+          cuad(gSide, [x0, hW, z1], [x0, hW, z0], [x0, y, z0], [x0, y, z1],
+            [z1, hW], [z0, hW], [z0, y], [z1, y]);
+        }
+        const hE = hEn(gx + 1, gz);
+        if (hE < y) {
+          cuad(gSide, [x1, hE, z0], [x1, hE, z1], [x1, y, z1], [x1, y, z0],
+            [z0, hE], [z1, hE], [z1, y], [z0, y]);
         }
       }
     }
-    ctx.putImageData(img, 0, 0);
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.flipY = false;
-    tex.magFilter = THREE.NearestFilter;
-    tex.minFilter = THREE.NearestFilter;
-    tex.generateMipmaps = false;
-    return tex;
+
+    Object.keys(geos).forEach((k) => {
+      const g = geos[k];
+      if (!g.n) return;
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute('position', new THREE.Float32BufferAttribute(g.pos, 3));
+      geom.setAttribute('uv', new THREE.Float32BufferAttribute(g.uv, 2));
+      geom.setIndex(g.idx);
+      geom.computeVertexNormals();
+      const partes = k.split('|');
+      const tex = texturas[partes[0]]
+        ? texturas[partes[0]][partes[1]] : null;
+      const mat = new THREE.MeshLambertMaterial({
+        map: tex, side: THREE.DoubleSide
+      });
+      mat.name = k;
+      grupoBloques.add(new THREE.Mesh(geom, mat));
+    });
   }
 
-  const tPos = [], tUv = [], tCol = [], tIdx = [];
-  let tvi = 0;
-  const totalMats = (W.matNames || []).length || 1;
-  for (let gz = 0; gz < N - 1; gz++) {
-    for (let gx = 0; gx < N - 1; gx++) {
-      const i = gz * N + gx;
-      const mi = (mats[i] % totalMats + totalMats) % totalMats;
-      const tx = (mi % ATLAS_COLS) * TILE;
-      const ty = Math.floor(mi / ATLAS_COLS) * TILE;
-      const u0 = (tx + 0.5) / ATLAS, u1 = (tx + TILE - 0.5) / ATLAS;
-      const v0 = (ty + 0.5) / ATLAS, v1 = (ty + TILE - 0.5) / ATLAS;
-      const x0 = W.minX + gx * step, x1 = x0 + step;
-      const z0 = W.minZ + gz * step, z1 = z0 + step;
-      const h00 = heights[i], h10 = heights[i + 1];
-      const h01 = heights[i + N], h11 = heights[i + N + 1];
-      const hR = heights[gz * N + Math.min(N - 1, gx + 1)];
-      const hD = heights[Math.min(N - 1, gz + 1) * N + gx];
-      const slope = Math.max(Math.abs(h00 - hR), Math.abs(h00 - hD)) / step;
-      const shade = 1 - Math.min(0.5, slope / 8);
-      tPos.push(x0, h00, z0, x1, h10, z0, x1, h11, z1, x0, h01, z1);
-      tUv.push(u0, v0, u1, v0, u1, v1, u0, v1);
-      for (let k = 0; k < 4; k++) tCol.push(shade, shade, shade);
-      tIdx.push(tvi, tvi + 2, tvi + 1, tvi, tvi + 3, tvi + 2);
-      tvi += 4;
-    }
-  }
-  const texGeo = new THREE.BufferGeometry();
-  texGeo.setAttribute('position', new THREE.Float32BufferAttribute(tPos, 3));
-  texGeo.setAttribute('uv', new THREE.Float32BufferAttribute(tUv, 2));
-  texGeo.setAttribute('color', new THREE.Float32BufferAttribute(tCol, 3));
-  texGeo.setIndex(tIdx);
-  texGeo.computeVertexNormals();
-  const texMat = new THREE.MeshLambertMaterial({
-    map: crearAtlas(), vertexColors: true, side: THREE.DoubleSide
+  Promise.all(cargas).then(() => {
+    construirBloques();
+    grupoBloques.visible = true;
+    smooth.visible = false;
+    document.getElementById('loading').classList.add('hide');
   });
-  const textured = new THREE.Mesh(texGeo, texMat);
-  scene.add(textured);
-
-  textured.visible = true;
-  smooth.visible = false;
-  terrain.visible = false;
 
   const waterGeo = new THREE.PlaneGeometry(W.width * step * 1.6, W.height * step * 1.6);
   const waterMat = new THREE.MeshPhongMaterial({
@@ -438,11 +421,14 @@
         (W.minZ + gz * step) + '</b> · altura <b>' + h + '</b>';
       return;
     }
-    const hit = raycaster.intersectObject(terrain, false)[0];
-    if (hit && hit.instanceId != null) {
-      const id = hit.instanceId;
-      const gz = Math.floor(id / N), gx = id % N;
-      const h = heights[id];
+    if (!grupoBloques.visible) return;
+    const hit = raycaster.intersectObjects(grupoBloques.children, false)[0];
+    if (hit) {
+      const gx = Math.max(0, Math.min(N - 1,
+        Math.floor((hit.point.x - W.minX) / step)));
+      const gz = Math.max(0, Math.min(N - 1,
+        Math.floor((hit.point.z - W.minZ) / step)));
+      const h = heights[gz * N + gx];
       hoverEl.innerHTML = 'x <b>' + (W.minX + gx * step) + '</b> · z <b>' +
         (W.minZ + gz * step) + '</b> · altura <b>' + h + '</b>';
     }
@@ -469,21 +455,18 @@
 
   const btnTextures = document.getElementById('btnTextures');
   const btnRelief = document.getElementById('btnRelief');
-  const btnBlocks = document.getElementById('btnBlocks');
   const btnWater = document.getElementById('btnWater');
   const btnTrees = document.getElementById('btnTrees');
   const btnWire = document.getElementById('btnWire');
   let modo = 'texturas';
   function setModo(m) {
     modo = m;
-    textured.visible = m === 'texturas';
+    grupoBloques.visible = m === 'texturas';
     smooth.visible = m === 'relieve';
-    terrain.visible = m === 'bloques';
     btnTextures.classList.toggle('on', m === 'texturas');
     btnRelief.classList.toggle('on', m === 'relieve');
-    btnBlocks.classList.toggle('on', m === 'bloques');
-    showToast(m === 'texturas' ? 'Texturas por bloque'
-      : m === 'relieve' ? 'Color por relieve' : 'Vista de bloques');
+    showToast(m === 'texturas' ? 'Bloques con texturas'
+      : 'Color por relieve');
   }
   btnTextures.onclick = () => setModo('texturas');
   btnRelief.onclick = () => setModo('relieve');
@@ -497,16 +480,17 @@
     if (!W.trees.length) showToast('Esta exportación no detectó árboles de tronco.');
   };
   btnWire.onclick = () => {
-    const w = !texMat.wireframe;
-    texMat.wireframe = w;
+    const w = !smoothMat.wireframe;
     smoothMat.wireframe = w;
     material.wireframe = w;
-    texMat.needsUpdate = true;
+    grupoBloques.children.forEach((mesh) => {
+      mesh.material.wireframe = w;
+      mesh.material.needsUpdate = true;
+    });
     smoothMat.needsUpdate = true;
     material.needsUpdate = true;
     btnWire.classList.toggle('on', w);
   };
-  btnBlocks.onclick = () => setModo('bloques');
   document.getElementById('btnTop').onclick = () => {
     camera.position.set(0.1, area * 1.5, 0.1);
     controls.target.copy(center);
@@ -530,7 +514,6 @@
     renderer.render(scene, camera);
   }
 
-  document.getElementById('loading').classList.add('hide');
   animate();
 })();
 </script>
