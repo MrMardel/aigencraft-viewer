@@ -270,7 +270,7 @@
     });
   }
 
-  const TINTES = { grass: '#79c05a' };
+  const TINTES = { grass: '#79c05a', water: '#3f76e4' };
   const nombresMat = W.matNames || [];
   const texturas = {};
   const cargas = nombresMat.map((nombre) => Promise.all([
@@ -452,6 +452,7 @@
     sel.appendChild(op);
   });
   sel.onchange = function () { location.search = '?world=' + sel.value; };
+  if (chaves.length < 2) sel.style.display = 'none';
 
   const btnTextures = document.getElementById('btnTextures');
   const btnRelief = document.getElementById('btnRelief');
@@ -501,6 +502,11 @@
     controls.target.copy(center);
     controls.update();
   };
+  if (new URLSearchParams(location.search).get('top')) {
+    camera.position.set(0.1, area * 1.5, 0.1);
+    controls.target.copy(center);
+    controls.update();
+  }
 
   addEventListener('resize', () => {
     camera.aspect = innerWidth / innerHeight;
