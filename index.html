@@ -52,7 +52,8 @@
 </div>
 <div id="controls" class="panel">
   <select id="worldSel" title="Reino"></select>
-  <button id="btnRelief" class="on">Relieve</button>
+  <button id="btnTextures" class="on">Texturas</button>
+  <button id="btnRelief">Relieve</button>
   <button id="btnBlocks">Bloques</button>
   <button id="btnWater" class="on">Agua</button>
   <button id="btnTrees" class="on">Árboles</button>
@@ -87,6 +88,7 @@
   }
 
   const heights = new Uint16Array(b64ToBuffer(W.heights));
+  const mats = new Uint8Array(b64ToBuffer(W.mats));
   const surfaceBytes = new Uint8Array(b64ToBuffer(W.colors));
   const N = W.width;
   const step = W.step;
@@ -125,11 +127,11 @@
   controls.maxDistance = 2600;
   controls.maxPolarAngle = Math.PI * 0.495;
 
-  scene.add(new THREE.HemisphereLight(0xdceeff, 0x304050, 1.0));
-  const sun = new THREE.DirectionalLight(0xfff4e6, 1.65);
+  scene.add(new THREE.HemisphereLight(0xdceeff, 0x304050, 0.85));
+  const sun = new THREE.DirectionalLight(0xfff4e6, 1.15);
   sun.position.set(-1.2, 1.8, 0.9);
   scene.add(sun);
-  const fill = new THREE.DirectionalLight(0x9dc8ff, 0.4);
+  const fill = new THREE.DirectionalLight(0x9dc8ff, 0.3);
   fill.position.set(1, 0.8, -1);
   scene.add(fill);
 
@@ -214,22 +216,162 @@
   terrain.visible = false;
   scene.add(smooth);
 
-  let mode = 'relief';
-  function applyColors() {
-    const src = mode === 'relief' ? relief : surface;
-    for (let i = 0; i < n; i++) {
-      tmp.setRGB(src[i * 3], src[i * 3 + 1], src[i * 3 + 2]);
-      terrain.setColorAt(i, tmp);
-      smoothColors[i * 3] = src[i * 3];
-      smoothColors[i * 3 + 1] = src[i * 3 + 1];
-      smoothColors[i * 3 + 2] = src[i * 3 + 2];
-    }
-    terrain.instanceMatrix.needsUpdate = true;
-    if (terrain.instanceColor) terrain.instanceColor.needsUpdate = true;
-    smoothGeo.attributes.color.needsUpdate = true;
+  for (let i = 0; i < n; i++) {
+    tmp.setRGB(surface[i * 3], surface[i * 3 + 1], surface[i * 3 + 2]);
+    terrain.setColorAt(i, tmp);
+    smoothColors[i * 3] = relief[i * 3];
+    smoothColors[i * 3 + 1] = relief[i * 3 + 1];
+    smoothColors[i * 3 + 2] = relief[i * 3 + 2];
   }
-  applyColors();
+  if (terrain.instanceColor) terrain.instanceColor.needsUpdate = true;
+  smoothGeo.attributes.color.needsUpdate = true;
   scene.add(terrain);
+
+  // ---------------------------------------------------------------
+  // Texturas: atlas procedural (16x16 px por material) para no
+  // depender de assets externos. Cada celda toma su tile según mats.
+  // ---------------------------------------------------------------
+  const ATLAS_COLS = 8, TILE = 16, ATLAS = ATLAS_COLS * TILE;
+  const MAT_STYLE = {
+    stone:      { base: [128, 128, 128], noise: 26, kind: 'speck' },
+    cobble:     { base: [104, 104, 104], noise: 30, kind: 'cobble' },
+    dirt:       { base: [116, 86, 58],  noise: 24, kind: 'speck' },
+    grass:      { base: [86, 142, 60],  noise: 26, kind: 'speck' },
+    sand:       { base: [214, 198, 143], noise: 18, kind: 'speck' },
+    gravel:     { base: [136, 132, 128], noise: 40, kind: 'cobble' },
+    snow:       { base: [238, 246, 250], noise: 10, kind: 'speck' },
+    ice:        { base: [176, 214, 238], noise: 14, kind: 'speck' },
+    water:      { base: [48, 96, 156],  noise: 10, kind: 'water' },
+    lava:       { base: [120, 44, 12],   noise: 22, kind: 'lava' },
+    netherrack: { base: [58, 24, 26],    noise: 24, kind: 'cobble' },
+    basalt:     { base: [34, 32, 38],    noise: 14, kind: 'lines' },
+    blackstone: { base: [24, 22, 26],    noise: 16, kind: 'speck' },
+    magma:      { base: [88, 32, 14],    noise: 20, kind: 'lava' },
+    soul:       { base: [96, 76, 56],    noise: 22, kind: 'speck' },
+    end_stone:  { base: [204, 198, 158], noise: 16, kind: 'speck' },
+    purpur:     { base: [168, 124, 166], noise: 16, kind: 'bricks' },
+    wood:       { base: [110, 80, 50],   noise: 16, kind: 'lines' },
+    leaves:     { base: [62, 110, 50],   noise: 32, kind: 'speck' },
+    terracotta: { base: [140, 90, 70],   noise: 16, kind: 'bricks' },
+    quartz:     { base: [230, 226, 216], noise: 10, kind: 'speck' },
+    gold:       { base: [214, 182, 86],  noise: 14, kind: 'speck' },
+    obsidian:   { base: [20, 16, 30],    noise: 12, kind: 'speck' },
+    moss:       { base: [90, 130, 66],   noise: 26, kind: 'speck' },
+    crimson:    { base: [122, 58, 74],   noise: 24, kind: 'speck' },
+    deepslate:  { base: [74, 74, 78],    noise: 18, kind: 'lines' }
+  };
+  function azar(seed) {
+    let t = seed >>> 0;
+    return function () {
+      t += 0x6D2B79F5;
+      let r = t;
+      r = Math.imul(r ^ r >>> 15, r | 1);
+      r ^= r + Math.imul(r ^ r >>> 7, r | 61);
+      return ((r ^ r >>> 14) >>> 0) / 4294967296;
+    };
+  }
+  function crearAtlas() {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = ATLAS;
+    const ctx = canvas.getContext('2d');
+    const img = ctx.createImageData(ATLAS, ATLAS);
+    const datos = img.data;
+    const nombres = W.matNames || [];
+    for (let m = 0; m < nombres.length; m++) {
+      const estilo = MAT_STYLE[nombres[m]]
+        || { base: [120, 120, 120], noise: 20, kind: 'speck' };
+      const tx = (m % ATLAS_COLS) * TILE;
+      const ty = Math.floor(m / ATLAS_COLS) * TILE;
+      const rnd = azar(0x9E3779B9 ^ (m * 2654435761));
+      const base = estilo.base;
+      for (let y = 0; y < TILE; y++) {
+        for (let x = 0; x < TILE; x++) {
+          let r = base[0], g = base[1], b = base[2];
+          const n = (rnd() - 0.5) * 2 * estilo.noise;
+          r += n; g += n; b += n;
+          // El paso del visor es de 3 bloques: cada tile lleva un 3x3
+          // de "bloques" para que la textura quede a escala.
+          const sx = Math.floor(x * 3 / TILE), sy = Math.floor(y * 3 / TILE);
+          const celda = (sx * 7 + sy * 13 + m * 31) % 7;
+          const v = (celda - 3) * 7;
+          r += v; g += v; b += v;
+          if (estilo.kind === 'lines' && (y % 5 === 0 || x % 7 === 0)) {
+            r -= 20; g -= 20; b -= 20;
+          }
+          if (estilo.kind === 'bricks' &&
+              (y % 8 === 0 || (x + (y < 8 ? 0 : 8)) % 16 === 0)) {
+            r -= 30; g -= 30; b -= 30;
+          }
+          if (estilo.kind === 'cobble') {
+            const cx = Math.floor(x / 5), cy = Math.floor(y / 5);
+            const v = ((cx * 7 + cy * 13) % 5) * 9 - 18;
+            r += v; g += v; b += v;
+          }
+          if (estilo.kind === 'water' &&
+              (y + Math.round(Math.sin(x / 2.2) * 1.6)) % 6 === 0) {
+            r += 18; g += 24; b += 28;
+          }
+          if (estilo.kind === 'lava' && rnd() > 0.86) {
+            r = 250; g += 70; b += 10;
+          }
+          const o = ((ty + y) * ATLAS + tx + x) * 4;
+          datos[o] = Math.max(0, Math.min(255, r));
+          datos[o + 1] = Math.max(0, Math.min(255, g));
+          datos[o + 2] = Math.max(0, Math.min(255, b));
+          datos[o + 3] = 255;
+        }
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.flipY = false;
+    tex.magFilter = THREE.NearestFilter;
+    tex.minFilter = THREE.NearestFilter;
+    tex.generateMipmaps = false;
+    return tex;
+  }
+
+  const tPos = [], tUv = [], tCol = [], tIdx = [];
+  let tvi = 0;
+  const totalMats = (W.matNames || []).length || 1;
+  for (let gz = 0; gz < N - 1; gz++) {
+    for (let gx = 0; gx < N - 1; gx++) {
+      const i = gz * N + gx;
+      const mi = (mats[i] % totalMats + totalMats) % totalMats;
+      const tx = (mi % ATLAS_COLS) * TILE;
+      const ty = Math.floor(mi / ATLAS_COLS) * TILE;
+      const u0 = (tx + 0.5) / ATLAS, u1 = (tx + TILE - 0.5) / ATLAS;
+      const v0 = (ty + 0.5) / ATLAS, v1 = (ty + TILE - 0.5) / ATLAS;
+      const x0 = W.minX + gx * step, x1 = x0 + step;
+      const z0 = W.minZ + gz * step, z1 = z0 + step;
+      const h00 = heights[i], h10 = heights[i + 1];
+      const h01 = heights[i + N], h11 = heights[i + N + 1];
+      const hR = heights[gz * N + Math.min(N - 1, gx + 1)];
+      const hD = heights[Math.min(N - 1, gz + 1) * N + gx];
+      const slope = Math.max(Math.abs(h00 - hR), Math.abs(h00 - hD)) / step;
+      const shade = 1 - Math.min(0.5, slope / 8);
+      tPos.push(x0, h00, z0, x1, h10, z0, x1, h11, z1, x0, h01, z1);
+      tUv.push(u0, v0, u1, v0, u1, v1, u0, v1);
+      for (let k = 0; k < 4; k++) tCol.push(shade, shade, shade);
+      tIdx.push(tvi, tvi + 2, tvi + 1, tvi, tvi + 3, tvi + 2);
+      tvi += 4;
+    }
+  }
+  const texGeo = new THREE.BufferGeometry();
+  texGeo.setAttribute('position', new THREE.Float32BufferAttribute(tPos, 3));
+  texGeo.setAttribute('uv', new THREE.Float32BufferAttribute(tUv, 2));
+  texGeo.setAttribute('color', new THREE.Float32BufferAttribute(tCol, 3));
+  texGeo.setIndex(tIdx);
+  texGeo.computeVertexNormals();
+  const texMat = new THREE.MeshLambertMaterial({
+    map: crearAtlas(), vertexColors: true, side: THREE.DoubleSide
+  });
+  const textured = new THREE.Mesh(texGeo, texMat);
+  scene.add(textured);
+
+  textured.visible = true;
+  smooth.visible = false;
+  terrain.visible = false;
 
   const waterGeo = new THREE.PlaneGeometry(W.width * step * 1.6, W.height * step * 1.6);
   const waterMat = new THREE.MeshPhongMaterial({
@@ -250,7 +392,13 @@
   const trunkMat = new THREE.MeshLambertMaterial({ color: 0x6b4a2f });
   const canopy = new THREE.InstancedMesh(canopyGeo, canopyMat, Math.max(1, W.trees.length));
   const trunk = new THREE.InstancedMesh(trunkGeo, trunkMat, Math.max(1, W.trees.length));
-  const treeColors = [0x2e6b45, 0x4b8b3a, 0x2f7a4a, 0x8a3a3a];
+  const PALETAS_ARBOL = {
+    emberhold: [0x8a2b3a, 0x2b7a6a, 0xa9362f, 0x6a2b4a],
+    frostveil: [0x2e6b45, 0x357a5a, 0x3f7d5a, 0x2a5a46],
+    nightfall: [0x6a5a8a, 0x8a6a9a, 0x4a3a5a, 0x7a5a7a],
+    evergrove: [0x2e6b45, 0x4b8b3a, 0x2f7a4a, 0x8a3a3a]
+  };
+  const treeColors = PALETAS_ARBOL[clave] || PALETAS_ARBOL.evergrove;
   W.trees.forEach((t, i) => {
     const x = t[0] + 0.5, y = t[1], z = t[2] + 0.5;
     dummy.position.set(x, y + 2.1, z);
@@ -319,18 +467,26 @@
   });
   sel.onchange = function () { location.search = '?world=' + sel.value; };
 
+  const btnTextures = document.getElementById('btnTextures');
   const btnRelief = document.getElementById('btnRelief');
   const btnBlocks = document.getElementById('btnBlocks');
   const btnWater = document.getElementById('btnWater');
   const btnTrees = document.getElementById('btnTrees');
   const btnWire = document.getElementById('btnWire');
-  btnRelief.onclick = () => {
-    mode = mode === 'relief' ? 'surface' : 'relief';
-    btnRelief.textContent = mode === 'relief' ? 'Relieve' : 'Superficie';
-    btnRelief.classList.toggle('on', mode === 'relief');
-    applyColors();
-    showToast(mode === 'relief' ? 'Color por relieve' : 'Color por bloque de superficie');
-  };
+  let modo = 'texturas';
+  function setModo(m) {
+    modo = m;
+    textured.visible = m === 'texturas';
+    smooth.visible = m === 'relieve';
+    terrain.visible = m === 'bloques';
+    btnTextures.classList.toggle('on', m === 'texturas');
+    btnRelief.classList.toggle('on', m === 'relieve');
+    btnBlocks.classList.toggle('on', m === 'bloques');
+    showToast(m === 'texturas' ? 'Texturas por bloque'
+      : m === 'relieve' ? 'Color por relieve' : 'Vista de bloques');
+  }
+  btnTextures.onclick = () => setModo('texturas');
+  btnRelief.onclick = () => setModo('relieve');
   btnWater.onclick = () => {
     water.visible = !water.visible;
     btnWater.classList.toggle('on', water.visible);
@@ -341,19 +497,16 @@
     if (!W.trees.length) showToast('Esta exportación no detectó árboles de tronco.');
   };
   btnWire.onclick = () => {
-    material.wireframe = !material.wireframe;
-    smoothMat.wireframe = material.wireframe;
-    material.needsUpdate = true;
+    const w = !texMat.wireframe;
+    texMat.wireframe = w;
+    smoothMat.wireframe = w;
+    material.wireframe = w;
+    texMat.needsUpdate = true;
     smoothMat.needsUpdate = true;
-    btnWire.classList.toggle('on', material.wireframe);
+    material.needsUpdate = true;
+    btnWire.classList.toggle('on', w);
   };
-  btnBlocks.onclick = () => {
-    const bloques = !terrain.visible;
-    terrain.visible = bloques;
-    smooth.visible = !bloques;
-    btnBlocks.classList.toggle('on', bloques);
-    showToast(bloques ? 'Vista de bloques' : 'Superficie suave');
-  };
+  btnBlocks.onclick = () => setModo('bloques');
   document.getElementById('btnTop').onclick = () => {
     camera.position.set(0.1, area * 1.5, 0.1);
     controls.target.copy(center);
