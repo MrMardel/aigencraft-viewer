@@ -111,7 +111,7 @@
   document.getElementById('seed').textContent = W.seed;
   document.getElementById('area').textContent = (W.width * W.step) + '×' + (W.height * W.step);
   document.getElementById('paso').textContent = W.fine
-    ? '1:1 en el detalle · ' + W.step + ':1 de fondo' : W.step;
+    ? '1:1 detalle / ' + W.step + ':1 fondo' : W.step;
   document.title = 'AigenCraft · ' + W.name + ' · Visor 3D';
   document.getElementById('range').textContent =
     'Alturas ' + W.minHeight + '–' + W.maxHeight + ' · mar ' + W.sea;
