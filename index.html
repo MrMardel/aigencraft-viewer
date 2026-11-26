@@ -33,6 +33,9 @@
     background:#0b1622; color:#bfe0ff; font-size:14px; letter-spacing:.1em; }
   #loading.hide { display:none; }
   .hint { color:#8fb6d4; font-size:11px; margin-top:6px; }
+  #sel { right:18px; bottom:18px; padding:10px 14px; min-width:210px; display:none; }
+  #sel .coord { color:#ffd98a; font-size:15px; margin:4px 0 2px; }
+  #sel .fila { display:flex; gap:6px; margin-top:8px; }
   #toast { position:fixed; left:50%; bottom:22px; transform:translateX(-50%);
     z-index:20; background:rgba(12,22,34,.9); color:#fff; padding:8px 14px;
     border-radius:8px; font-size:12px; opacity:0; transition:.3s; pointer-events:none; }
@@ -57,12 +60,22 @@
   <button id="btnWater" class="on">Agua</button>
   <button id="btnTrees" class="on">Árboles</button>
   <button id="btnWire">Aristas</button>
+  <button id="btnFine" class="on">1:1</button>
   <button id="btnTop">Vista superior</button>
   <button id="btnReset">Reiniciar vista</button>
 </div>
 <div id="hud" class="panel">
   <div>Arrastrá para girar · scroll para acercar</div>
   <div class="hint" id="hover">Pasá el mouse sobre el terreno para ver coordenadas.</div>
+</div>
+<div id="sel" class="panel">
+  <div class="hint">Bloque seleccionado</div>
+  <div class="coord" id="selCoord">—</div>
+  <div class="hint" id="selInfo">—</div>
+  <div class="fila">
+    <button id="btnCopy">Copiar</button>
+    <button id="btnClear">Limpiar</button>
+  </div>
 </div>
 <div id="toast"></div>
 
@@ -97,7 +110,8 @@
   document.getElementById('worldName').textContent = W.name;
   document.getElementById('seed').textContent = W.seed;
   document.getElementById('area').textContent = (W.width * W.step) + '×' + (W.height * W.step);
-  document.getElementById('paso').textContent = W.step;
+  document.getElementById('paso').textContent = W.fine
+    ? '1:1 en el detalle · ' + W.step + ':1 de fondo' : W.step;
   document.title = 'AigenCraft · ' + W.name + ' · Visor 3D';
   document.getElementById('range').textContent =
     'Alturas ' + W.minHeight + '–' + W.maxHeight + ' · mar ' + W.sea;
@@ -342,18 +356,325 @@
       const tex = texturas[partes[0]]
         ? texturas[partes[0]][partes[1]] : null;
       const mat = new THREE.MeshLambertMaterial({
-        map: tex, side: THREE.DoubleSide
+        map: tex, side: THREE.DoubleSide,
+        polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 4
       });
       mat.name = k;
       grupoBloques.add(new THREE.Mesh(geom, mat));
     });
   }
 
+
+  // ---------------------------------------------------------------
+  // Detalle 1:1 por tiles. Cada tile es un .bin con alturas y
+  // materiales; se cargan los que rodean el objetivo de la cámara.
+  // ---------------------------------------------------------------
+  const fine = W.fine || null;
+  const grupoTiles = new THREE.Group();
+  grupoTiles.visible = false;
+  grupoTiles.renderOrder = 1;
+  scene.add(grupoTiles);
+  const datosTiles = new Map();
+  const materialesTile = new Map();
+  const tilesVisibles = [];
+  let firmaTiles = '';
+  let fineActivo = !!fine;
+
+  function materialTile(mat, tipo) {
+    const k = mat + '|' + tipo;
+    let m = materialesTile.get(k);
+    if (!m) {
+      const tex = texturas[mat] ? texturas[mat][tipo] : null;
+      m = new THREE.MeshLambertMaterial({ map: tex, side: THREE.DoubleSide });
+      materialesTile.set(k, m);
+    }
+    return m;
+  }
+
+  function claveTile(ix, iz) { return ix + '|' + iz; }
+
+  function cargarTile(ix, iz) {
+    const k = claveTile(ix, iz);
+    if (datosTiles.has(k)) return Promise.resolve(datosTiles.get(k));
+    if (ix < 0 || iz < 0 || ix >= fine.cols || iz >= fine.rows) {
+      return Promise.resolve(null);
+    }
+    return fetch(fine.url + '/' + ix + '_' + iz + '.bin').then((r) => {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.arrayBuffer();
+    }).then((buf) => {
+      const dv = new DataView(buf);
+      if (dv.getInt32(0, true) !== 0x54474941) throw new Error('Formato');
+      const T = dv.getInt16(6, true);
+      const n = dv.getInt32(12, true);
+      let off = 16;
+      const hs = new Int16Array(n);
+      for (let i = 0; i < n; i++, off += 2) hs[i] = dv.getInt16(off, true);
+      const ms = new Uint8Array(n);
+      for (let i = 0; i < n; i++) ms[i] = dv.getUint8(off + i);
+      const datos = { ix: ix, iz: iz, T: T, heights: hs, mats: ms };
+      datosTiles.set(k, datos);
+      return datos;
+    });
+  }
+
+  function alturaBloque(wx, wz) {
+    if (fine) {
+      const ix = Math.floor((wx - fine.minX) / fine.tile);
+      const iz = Math.floor((wz - fine.minZ) / fine.tile);
+      const d = datosTiles.get(claveTile(ix, iz));
+      if (d) {
+        const lx = wx - (fine.minX + ix * fine.tile);
+        const lz = wz - (fine.minZ + iz * fine.tile);
+        if (lx >= 0 && lz >= 0 && lx < d.T && lz < d.T) {
+          return d.heights[lz * d.T + lx];
+        }
+      }
+    }
+    const gx = Math.max(0, Math.min(N - 1, Math.round((wx - W.minX) / step)));
+    const gz = Math.max(0, Math.min(N - 1, Math.round((wz - W.minZ) / step)));
+    return heights[gz * N + gx];
+  }
+
+  function materialBloque(wx, wz) {
+    if (fine) {
+      const ix = Math.floor((wx - fine.minX) / fine.tile);
+      const iz = Math.floor((wz - fine.minZ) / fine.tile);
+      const d = datosTiles.get(claveTile(ix, iz));
+      if (d) {
+        const lx = wx - (fine.minX + ix * fine.tile);
+        const lz = wz - (fine.minZ + iz * fine.tile);
+        if (lx >= 0 && lz >= 0 && lx < d.T && lz < d.T) {
+          const m = d.mats[lz * d.T + lx];
+          return nombresMat[m] || 'stone';
+        }
+      }
+    }
+    return 'stone';
+  }
+
+  function limpiarTiles() {
+    for (const hijo of grupoTiles.children) {
+      if (hijo.geometry) hijo.geometry.dispose();
+    }
+    grupoTiles.clear();
+  }
+
+  function construirTiles() {
+    limpiarTiles();
+    const geos = {};
+    const porMaterial = (mat, tipo) => {
+      const k = mat + '|' + tipo;
+      if (!geos[k]) geos[k] = { pos: [], uv: [], idx: [], n: 0 };
+      return geos[k];
+    };
+    const cuad = (g, a, b, c, d, ua, ub, uc, ud) => {
+      const base = g.n;
+      g.pos.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2], d[0], d[1], d[2]);
+      g.uv.push(ua[0], ua[1], ub[0], ub[1], uc[0], uc[1], ud[0], ud[1]);
+      g.idx.push(base, base + 2, base + 1, base, base + 3, base + 2);
+      g.n += 4;
+    };
+    for (const par of tilesVisibles) {
+      const d = datosTiles.get(claveTile(par[0], par[1]));
+      if (!d) continue;
+      const T = d.T;
+      const x0t = fine.minX + d.ix * T;
+      const z0t = fine.minZ + d.iz * T;
+      for (let lz = 0; lz < T; lz++) {
+        for (let lx = 0; lx < T; lx++) {
+          const i = lz * T + lx;
+          const mat = nombresMat[d.mats[i]] || 'stone';
+          const y = d.heights[i];
+          const x0 = x0t + lx, x1 = x0 + 1;
+          const z0 = z0t + lz, z1 = z0 + 1;
+          const gTop = porMaterial(mat, 'top');
+          cuad(gTop, [x0, y, z0], [x1, y, z0], [x1, y, z1], [x0, y, z1],
+            [x0, z0], [x1, z0], [x1, z1], [x0, z1]);
+          const gSide = porMaterial(mat, 'side');
+          const hN = alturaBloque(x0, z0 - 1);
+          if (hN < y) {
+            cuad(gSide, [x0, hN, z0], [x1, hN, z0], [x1, y, z0], [x0, y, z0],
+              [x0, hN], [x1, hN], [x1, y], [x0, y]);
+          }
+          const hS = alturaBloque(x0, z0 + 1);
+          if (hS < y) {
+            cuad(gSide, [x1, hS, z1], [x0, hS, z1], [x0, y, z1], [x1, y, z1],
+              [x1, hS], [x0, hS], [x0, y], [x1, y]);
+          }
+          const hW = alturaBloque(x0 - 1, z0);
+          if (hW < y) {
+            cuad(gSide, [x0, hW, z1], [x0, hW, z0], [x0, y, z0], [x0, y, z1],
+              [z1, hW], [z0, hW], [z0, y], [z1, y]);
+          }
+          const hE = alturaBloque(x0 + 1, z0);
+          if (hE < y) {
+            cuad(gSide, [x1, hE, z0], [x1, hE, z1], [x1, y, z1], [x1, y, z0],
+              [z0, hE], [z1, hE], [z1, y], [z0, y]);
+          }
+        }
+      }
+    }
+    Object.keys(geos).forEach((k) => {
+      const g = geos[k];
+      if (!g.n) return;
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute('position', new THREE.Float32BufferAttribute(g.pos, 3));
+      geom.setAttribute('uv', new THREE.Float32BufferAttribute(g.uv, 2));
+      geom.setIndex(g.idx);
+      geom.computeVertexNormals();
+      const partes = k.split('|');
+      grupoTiles.add(new THREE.Mesh(geom, materialTile(partes[0], partes[1])));
+    });
+    grupoTiles.visible = fineActivo && modo === 'texturas';
+    if (seleccion && marcador.visible) {
+      seleccionar(seleccion.x, seleccion.z);
+    }
+  }
+
+  function actualizarTiles(forzar) {
+    if (!fine || !fineActivo) return;
+    const centroX = Math.floor((controls.target.x - fine.minX) / fine.tile);
+    const centroZ = Math.floor((controls.target.z - fine.minZ) / fine.tile);
+    let firma = '';
+    const pedidos = [];
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const ix = Math.max(0, Math.min(fine.cols - 1, centroX + dx));
+        const iz = Math.max(0, Math.min(fine.rows - 1, centroZ + dz));
+        firma += ix + ',' + iz + ';';
+        pedidos.push([ix, iz]);
+      }
+    }
+    if (!forzar && firma === firmaTiles) return;
+    firmaTiles = firma;
+    Promise.all(pedidos.map(([ix, iz]) => cargarTile(ix, iz)
+      .catch(() => null))).then(() => {
+        if (firma !== firmaTiles) return;
+        tilesVisibles.length = 0;
+        for (const par of pedidos) {
+          if (datosTiles.has(claveTile(par[0], par[1]))) {
+            tilesVisibles.push(par);
+          }
+        }
+        construirTiles();
+      });
+  }
+
+  // Gancho de diagnóstico para pruebas automatizadas.
+  window.__visor = {
+    listo: () => document.getElementById('loading').classList.contains('hide'),
+    estado: () => ({
+      tiles: datosTiles.size,
+      mallas: grupoTiles.children.length,
+      visibles: tilesVisibles.length,
+      fine: !!fine,
+      fineActivo: fineActivo,
+      modo: modo
+    })
+  };
+
+  // Marcador del bloque elegido.
+  const marcador = new THREE.Group();
+  marcador.visible = false;
+  scene.add(marcador);
+  const cajaMarcador = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)),
+    new THREE.LineBasicMaterial({ color: 0xffd24a, depthTest: false })
+  );
+  const hazMarcador = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.18, 0.18, 40, 6, 1, true),
+    new THREE.MeshBasicMaterial({ color: 0xffd24a, depthTest: false,
+      transparent: true, opacity: 0.85 })
+  );
+  hazMarcador.position.set(0, 20, 0);
+  cajaMarcador.renderOrder = 999;
+  hazMarcador.renderOrder = 999;
+  marcador.add(cajaMarcador, hazMarcador);
+  const pin = document.createElement('div');
+  pin.style.cssText = 'position:fixed; z-index:15; pointer-events:none;' +
+    'transform:translate(-50%,-100%); background:rgba(12,22,34,.88);' +
+    'border:1px solid rgba(255,210,74,.75); border-radius:7px;' +
+    'padding:3px 7px; font-size:11px; color:#ffd98a; display:none;' +
+    'white-space:nowrap;';
+  document.body.appendChild(pin);
+
+  let seleccion = null;
+  const selEl = document.getElementById('sel');
+  const selCoord = document.getElementById('selCoord');
+  const selInfo = document.getElementById('selInfo');
+
+  function seleccionar(wx, wz) {
+    const by = alturaBloque(wx, wz);
+    const mat = materialBloque(wx, wz);
+    seleccion = { x: wx, y: by, z: wz, mat: mat };
+    marcador.position.set(wx + 0.5, by + 0.5, wz + 0.5);
+    marcador.visible = true;
+    selEl.style.display = 'block';
+    selCoord.textContent = wx + ' ' + (by + 1) + ' ' + wz;
+    pin.textContent = wx + ' ' + (by + 1) + ' ' + wz;
+    const url = new URL(location.href);
+    url.searchParams.set('x', wx);
+    url.searchParams.set('z', wz);
+    history.replaceState(null, '', url);
+    pin.style.display = 'block';
+    selInfo.textContent = 'Superficie y=' + by + ' · ' + mat +
+      ' · /tp ' + (wx + 0.5) + ' ' + (by + 1) + ' ' + (wz + 0.5);
+  }
+
+  function bloqueBajoPuntero(ev) {
+    pointer.x = (ev.clientX / innerWidth) * 2 - 1;
+    pointer.y = -(ev.clientY / innerHeight) * 2 + 1;
+    raycaster.setFromCamera(pointer, camera);
+    if (grupoTiles.visible && grupoTiles.children.length) {
+      const hit = raycaster.intersectObjects(grupoTiles.children, false)[0];
+      if (hit) {
+        return { x: Math.floor(hit.point.x), z: Math.floor(hit.point.z),
+          exacto: true };
+      }
+    }
+    const objetivos = grupoBloques.visible
+      ? grupoBloques.children : (smooth.visible ? [smooth] : []);
+    const hit = raycaster.intersectObjects(objetivos, false)[0];
+    if (hit) {
+      return { x: Math.floor(hit.point.x), z: Math.floor(hit.point.z),
+        exacto: false };
+    }
+    return null;
+  }
+
+  document.getElementById('btnCopy').onclick = () => {
+    if (!seleccion) return;
+    const texto = seleccion.x + ' ' + (seleccion.y + 1) + ' ' + seleccion.z;
+    if (navigator.clipboard) navigator.clipboard.writeText(texto);
+    showToast('Copiado: ' + texto);
+  };
+  document.getElementById('btnClear').onclick = () => {
+    seleccion = null;
+    marcador.visible = false;
+    pin.style.display = 'none';
+    selEl.style.display = 'none';
+  };
+
+  let punteroAbajoX = 0;
+  let punteroAbajoY = 0;
+  renderer.domElement.addEventListener('pointerdown', (ev) => {
+    punteroAbajoX = ev.clientX;
+    punteroAbajoY = ev.clientY;
+  });
+  renderer.domElement.addEventListener('pointerup', (ev) => {
+    if (Math.hypot(ev.clientX - punteroAbajoX,
+      ev.clientY - punteroAbajoY) > 5) return;
+    const bloque = bloqueBajoPuntero(ev);
+    if (bloque) seleccionar(bloque.x, bloque.z);
+  });
+
   Promise.all(cargas).then(() => {
     construirBloques();
     grupoBloques.visible = true;
     smooth.visible = false;
     document.getElementById('loading').classList.add('hide');
+    actualizarTiles(true);
   });
 
   const waterGeo = new THREE.PlaneGeometry(W.width * step * 1.6, W.height * step * 1.6);
@@ -406,32 +727,13 @@
   const pointer = new THREE.Vector2();
   const hoverEl = document.getElementById('hover');
   renderer.domElement.addEventListener('pointermove', (ev) => {
-    pointer.x = (ev.clientX / innerWidth) * 2 - 1;
-    pointer.y = -(ev.clientY / innerHeight) * 2 + 1;
-    raycaster.setFromCamera(pointer, camera);
-    const hitSmooth = smooth.visible
-      ? raycaster.intersectObject(smooth, false)[0] : null;
-    if (hitSmooth) {
-      const gx = Math.max(0, Math.min(N - 1,
-        Math.round((hitSmooth.point.x - W.minX) / step)));
-      const gz = Math.max(0, Math.min(N - 1,
-        Math.round((hitSmooth.point.z - W.minZ) / step)));
-      const h = heights[gz * N + gx];
-      hoverEl.innerHTML = 'x <b>' + (W.minX + gx * step) + '</b> · z <b>' +
-        (W.minZ + gz * step) + '</b> · altura <b>' + h + '</b>';
-      return;
-    }
-    if (!grupoBloques.visible) return;
-    const hit = raycaster.intersectObjects(grupoBloques.children, false)[0];
-    if (hit) {
-      const gx = Math.max(0, Math.min(N - 1,
-        Math.floor((hit.point.x - W.minX) / step)));
-      const gz = Math.max(0, Math.min(N - 1,
-        Math.floor((hit.point.z - W.minZ) / step)));
-      const h = heights[gz * N + gx];
-      hoverEl.innerHTML = 'x <b>' + (W.minX + gx * step) + '</b> · z <b>' +
-        (W.minZ + gz * step) + '</b> · altura <b>' + h + '</b>';
-    }
+    const bloque = bloqueBajoPuntero(ev);
+    if (!bloque) return;
+    const h = alturaBloque(bloque.x, bloque.z);
+    const mat = materialBloque(bloque.x, bloque.z);
+    hoverEl.innerHTML = 'x <b>' + bloque.x + '</b> · z <b>' + bloque.z +
+      '</b> · altura <b>' + h + '</b> · ' + mat +
+      (bloque.exacto ? ' · <b>1:1</b>' : '');
   });
 
   const toast = document.getElementById('toast');
@@ -464,10 +766,29 @@
     modo = m;
     grupoBloques.visible = m === 'texturas';
     smooth.visible = m === 'relieve';
+    grupoTiles.visible = fineActivo && m === 'texturas';
     btnTextures.classList.toggle('on', m === 'texturas');
     btnRelief.classList.toggle('on', m === 'relieve');
     showToast(m === 'texturas' ? 'Bloques con texturas'
       : 'Color por relieve');
+  }
+  const btnFine = document.getElementById('btnFine');
+  if (!fine) {
+    btnFine.style.display = 'none';
+    fineActivo = false;
+  } else {
+    btnFine.onclick = () => {
+      fineActivo = !fineActivo;
+      btnFine.classList.toggle('on', fineActivo);
+      grupoTiles.visible = fineActivo && modo === 'texturas';
+      if (fineActivo) {
+        firmaTiles = '';
+        actualizarTiles(true);
+        showToast('Detalle 1:1 activado');
+      } else {
+        showToast('Detalle 1:1 desactivado');
+      }
+    };
   }
   btnTextures.onclick = () => setModo('texturas');
   btnRelief.onclick = () => setModo('relieve');
@@ -514,9 +835,37 @@
     renderer.setSize(innerWidth, innerHeight);
   });
 
+  const enlace = new URLSearchParams(location.search);
+  if (enlace.get('x') !== null && enlace.get('z') !== null) {
+    const px = parseInt(enlace.get('x'), 10);
+    const pz = parseInt(enlace.get('z'), 10);
+    if (!isNaN(px) && !isNaN(pz)) {
+      const py = alturaBloque(px, pz);
+      controls.target.set(px + 0.5, py, pz + 0.5);
+      const d = Math.max(60, Math.min(400,
+        parseFloat(enlace.get('d')) || 150));
+      camera.position.set(px + 0.5 + d, py + d * 0.8, pz + 0.5 + d);
+      controls.update();
+      firmaTiles = '';
+      actualizarTiles(true);
+      seleccionar(px, pz);
+    }
+  }
+
   function animate() {
     requestAnimationFrame(animate);
     controls.update();
+    actualizarTiles(false);
+    if (seleccion && marcador.visible) {
+      const v = new THREE.Vector3(seleccion.x + 0.5, seleccion.y + 2.2,
+        seleccion.z + 0.5).project(camera);
+      const detras = v.z > 1 || v.z < -1;
+      pin.style.display = detras ? 'none' : 'block';
+      if (!detras) {
+        pin.style.left = ((v.x * 0.5 + 0.5) * innerWidth) + 'px';
+        pin.style.top = ((-v.y * 0.5 + 0.5) * innerHeight) + 'px';
+      }
+    }
     renderer.render(scene, camera);
   }
 
